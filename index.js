@@ -68,18 +68,49 @@ app.post('/scrape', async (req, res) => {
     // Critical page patterns - these MUST be checked
     const criticalPagePatterns = [
       // Career and jobs pages - highest priority
-      /careers?\/?$|careers?\/|jobs?\/?$|jobs?\//i,
+      /careers?\/?$|careers?\//i,
+      /jobs?\/?$|jobs?\//i,
       /work.*?with.*?us|join.*?us|employment|vacancies|openings/i,
       /careers?\.html|jobs?\.html|careers?\.php|jobs?\.php/i,
       /recruit|hiring|apply|application|vacancy|position/i,
+      /career-opportunities|job-opportunities|open-positions/i,
+      /employment-opportunities|current-openings|available-positions/i,
+      /we-are-hiring|join-our-team|join-the-team|become-part-of/i,
+      /work-with-us|work-for-us|work-at/i,
+      /job-listings|job-board|career-board|job-search/i,
       
       // Contact and about pages - high priority
       /contact|about.*?us|team|people|staff|directory|department/i,
+      /our-team|meet-the-team|meet-our-team|our-people|our-staff/i,
+      /contact-us|get-in-touch|reach-us|connect-with-us/i,
+      /about-company|about-firm|who-we-are|what-we-do/i,
+      /our-company|our-firm|our-business|our-mission/i,
+      /team-members|team-bios|staff-members|staff-directory/i,
+      /employee-directory|personnel|faculty|our-experts/i,
       
       // Other potential HR contact points - medium priority
-      /company|opportunities|leadership|management|corporate/i
+      /company|opportunities|leadership|management|corporate/i,
+      /human-resources|hr-department|hr-team|hr-contact/i,
+      /executive-team|board-of-directors|leadership-team/i,
+      /our-leadership|our-management|executive-management/i,
+      /corporate-info|corporate-information|company-info/i,
+      /board-members|c-suite|senior-leadership|executives/i,
+      
+      // Additional pages that might contain career/contact information
+      /internships|fellowships|traineeships|apprenticeships/i,
+      /talent-acquisition|talent-pool|talent-community/i,
+      /careers-faq|job-faq|application-process|how-to-apply/i,
+      /benefits|perks|why-work-here|why-join-us/i,
+      /locations|offices|branches|sites|headquarters/i,
+      /diversity|inclusion|equal-opportunity|accessibility/i,
+      /culture|values|workplace|environment/i,
+      /alumni|former-employees|employee-testimonials/i,
+      /newsroom|press|media|news|press-releases/i,
+      /investors|investor-relations|shareholders|stakeholders/i,
+      /partners|partnerships|collaborations|affiliates/i,
+      /support|help|assistance|customer-service|feedback/i
     ];
-    
+        
     // First pass: Comprehensive site mapping with intelligent crawling
     const criticalPages = new Set();
     const highValuePages = new Set();
