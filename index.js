@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const { extractEmails, extractLinks, fetchPage, prioritizeUrls, storeEmailInSupabase } = require('./scraper-utils');
+const { extractEmails, extractLinks, fetchPage, prioritizeUrls, storeEmailInSupabase,scrapeSiteWithMemoryManagement } = require('./scraper-utils');
 const bulkScraper = require('./bulk-scraper');
 
 const app = express();
@@ -20,6 +20,28 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // Middleware
 app.use(cors());
 app.use(express.json());
+// Start scraping with memory management
+async function main() {
+  try {
+    const result = await scrapeSiteWithMemoryManagement(
+      'https://example.com',  // Target website
+      supabase,              // Supabase client
+      100,                   // Max pages (adjust as needed)
+      3                      // Max concurrent requests
+    );
+    
+    console.log('Scraping result:', result);
+  } catch (error) {
+    console.error('Scraping failed:', error);
+  }
+}
+
+// Optional: Enable manual garbage collection if running with --expose-gc flag
+if (global.gc) {
+  console.log('Garbage collection is enabled');
+}
+
+main();
 
 // Main scraping endpoint
 app.post('/scrape', async (req, res) => {
@@ -496,6 +518,7 @@ function extractEnhancedEmails(html, pageUrl) {
   
   return emailsOnPage;
 }// Status endpoint to check if server is running
+
 app.get('/status', (req, res) => {
   res.json({ status: 'Server is running' });
 });
