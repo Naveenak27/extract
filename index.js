@@ -110,7 +110,7 @@ app.post('/scrape', async (req, res) => {
       /partners|partnerships|collaborations|affiliates/i,
       /support|help|assistance|customer-service|feedback/i
     ];
-        
+
     // First pass: Comprehensive site mapping with intelligent crawling
     const criticalPages = new Set();
     const highValuePages = new Set();
@@ -165,14 +165,31 @@ app.post('/scrape', async (req, res) => {
       }
       
       // While we're here, do a quick scan for emails on critical pages to avoid missing anything
-      if (isCritical) {
-        const quickEmailScan = extractEmails(html, currentUrl);
-        if (quickEmailScan.length > 0) {
-          console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping`);
-          pagesWithEmails.add(currentUrl);
+if (isCritical) {
+  const quickEmailScan = extractEmails(html, currentUrl);
+  if (quickEmailScan.length > 0) {
+    console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping`);
+    pagesWithEmails.add(currentUrl);
+    
+    // Store emails found during mapping
+    for (const item of quickEmailScan) {
+      if (item.isHrRelated) {
+        try {
+          await storeEmailInSupabase(supabase, {
+            email: item.email.toLowerCase(),
+            source: currentUrl,
+            context: item.context || null,
+            isHrRelated: true,
+            pageType: 'CRITICAL'
+          });
+          console.log(`  ✓ Stored HR email during mapping: ${item.email.toLowerCase()}`);
+        } catch (dbError) {
+          console.error(`  ✗ Database error during mapping: ${item.email}:`, dbError);
         }
       }
-      
+    }
+  }
+}      
       // Extract all links for further discovery with enhanced extraction
       let links = extractLinks(html, currentUrl);
       
