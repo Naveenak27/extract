@@ -165,32 +165,45 @@ app.post('/scrape', async (req, res) => {
       }
       
       // While we're here, do a quick scan for emails on critical pages to avoid missing anything
-if (isCritical) {
-  const quickEmailScan = extractEmails(html, currentUrl);
-  if (quickEmailScan.length > 0) {
-    console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping`);
-    pagesWithEmails.add(currentUrl);
-    
-    // Store emails found during mapping
-    for (const item of quickEmailScan) {
-      if (item.isHrRelated) {
-        try {
-          await storeEmailInSupabase(supabase, {
-            email: item.email.toLowerCase(),
-            source: currentUrl,
-            context: item.context || null,
-            isHrRelated: true,
-            pageType: 'CRITICAL'
-          });
-          console.log(`  ✓ Stored HR email during mapping: ${item.email.toLowerCase()}`);
-        } catch (dbError) {
-          console.error(`  ✗ Database error during mapping: ${item.email}:`, dbError);
+      if (isCritical) {
+        const quickEmailScan = extractEmails(html, currentUrl);
+        if (quickEmailScan.length > 0) {
+          console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping`);
+          pagesWithEmails.add(currentUrl);
+          
+          // Debug information
+          console.log('  DEBUG: Email details:', JSON.stringify(quickEmailScan));
+          
+          // Store emails found during mapping
+          for (const item of quickEmailScan) {
+            console.log(`  Attempting to store email: ${item.email} | isHrRelated: ${item.isHrRelated}`);
+            
+            if (item.isHrRelated) {
+              try {
+                const storageResult = await storeEmailInSupabase(supabase, {
+                  email: item.email.toLowerCase(),
+                  source: currentUrl,
+                  context: item.context || null,
+                  isHrRelated: true,
+                  pageType: 'CRITICAL'
+                });
+                
+                console.log(`  Storage result: ${JSON.stringify(storageResult)}`);
+                
+                if (storageResult.success) {
+                  console.log(`  ✓ Stored HR email during mapping: ${item.email.toLowerCase()}`);
+                } else {
+                  console.log(`  ✗ Failed to store HR email: ${item.email} - ${storageResult.error}`);
+                }
+              } catch (dbError) {
+                console.error(`  ✗ Database error during mapping:`, dbError);
+              }
+            } else {
+              console.log(`  ⚠ Email not classified as HR-related, skipping storage: ${item.email}`);
+            }
+          }
         }
-      }
-    }
-  }
-}      
-      // Extract all links for further discovery with enhanced extraction
+      }      // Extract all links for further discovery with enhanced extraction
       let links = extractLinks(html, currentUrl);
       
       // Add new links to the discovery queue
