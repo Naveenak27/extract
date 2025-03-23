@@ -25,6 +25,7 @@ const extractEmails = (html, pageUrl) => {
     // Position types
     'position', 'employment', 'intern', 'internship', 'jobopportunity',
     
+    
     // Departments and roles
     'placement', 'payroll', 'compensation', 'benefits', 'training', 'development',
     'workforce', 'workday', 'employee', 'employer', 'staff', 'talent', 'people', 'peopleops',
