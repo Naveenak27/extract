@@ -22,20 +22,22 @@ app.use(cors());
 app.use(express.json());
 
 // Main scraping endpoint
+// Improved controller for HR email scraping with memory optimization and enhanced filtering
 app.post('/scrape', async (req, res) => {
   try {
     const { url, maxPages = 100, thoroughScan = false } = req.body;
     
-    // Allow overriding the max pages for thorough scans
-    const effectiveMaxPages = thoroughScan ? 300 : maxPages;
+    // Allow overriding the max pages for thorough scans with a reasonable upper limit
+    const effectiveMaxPages = thoroughScan ? Math.min(300, maxPages * 2) : maxPages;
     
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
     }
     
     // Validate URL
+    let baseUrl;
     try {
-      new URL(url);
+      baseUrl = new URL(url);
     } catch (e) {
       return res.status(400).json({ error: 'Invalid URL format' });
     }
@@ -51,248 +53,415 @@ app.post('/scrape', async (req, res) => {
     let totalEmailsFound = 0;
     let emailsStoredInDb = 0;
     
-    // Track processed URLs and pages with emails
-    const processedUrls = new Set();
-    const pagesWithEmails = new Set();
-    const foundEmails = [];
+    // Track processed URLs and pages with emails - using Maps instead of Sets for better memory management
+    // Map instead of Set allows associating metadata with URLs for smarter processing
+    const processedUrls = new Map(); // url -> { hasEmails: boolean, priority: number }
+    const foundEmails = []; // Limited array size
     const errors = [];
     
-    // Track unique emails (case insensitive)
-    const uniqueEmails = new Set();
+    // Track unique emails (case insensitive) with a more efficient structure
+    const uniqueEmails = new Map(); // email -> { count: number, sources: Set<string> }
     
-    // PHASE 1: COMPREHENSIVE SITE MAPPING
-    console.log('='.repeat(50));
-    console.log('PHASE 1: COMPREHENSIVE SITE MAPPING');
-    console.log('='.repeat(50));
-    
-    // Critical page patterns - these MUST be checked
+    // Define critical page patterns - these MUST be checked
     const criticalPagePatterns = [
       // Career and jobs pages - highest priority
       /careers?\/?$|careers?\/|jobs?\/?$|jobs?\//i,
       /work.*?with.*?us|join.*?us|employment|vacancies|openings/i,
       /careers?\.html|jobs?\.html|careers?\.php|jobs?\.php/i,
-      /recruit|hiring|apply|application|vacancy|position/i,
+      /positions?\/?$|positions?\/|opportunities\/?$/i,
+      /recruitment|hiring|talent|apply(-|_|\.)now|jointeam|joinus/i,
       
       // Contact and about pages - high priority
-      /contact|about.*?us|team|people|staff|directory|department/i,
-      
-      // Other potential HR contact points - medium priority
-      /company|opportunities|leadership|management|corporate/i
+      /contact|about.*?us|team|people|staff|directory/i
     ];
     
-    // First pass: Comprehensive site mapping with intelligent crawling
-    const criticalPages = new Set();
-    const highValuePages = new Set();
-    const regularPages = new Set();
+    // Extended list of file extensions to skip - CRUCIAL for memory optimization
+    const excludedExtensions = [
+      // Documents and media
+      '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.ppsx', '.xls', '.xlsx', 
+      '.csv', '.rtf', '.txt', '.zip', '.rar', '.tar', '.gz', '.7z',
+      // Images
+      '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico',
+      // Audio/Video
+      '.mp3', '.mp4', '.wav', '.avi', '.mov', '.wmv', '.flv', '.mkv',
+      // Other
+      '.xml', '.json', '.rss', '.atom', '.css', '.js', '.map',
+      // Fonts
+      '.ttf', '.otf', '.woff', '.woff2', '.eot'
+    ];
     
-    let urlsToDiscover = [url];
-    let discoveryPagesScanned = 0;
-    const maxDiscoveryPages = Math.min(100, effectiveMaxPages / 2);
+    // Skip URLs containing these patterns (site sections usually irrelevant to HR)
+    const excludedPatterns = [
+      // Media and resources that rarely contain HR contact info
+      '/wp-content/', '/wp-includes/', '/wp-admin/', '/wp-json/', '/admin/',
+      '/assets/', '/static/', '/dist/', '/build/', '/node_modules/',
+      '/press-release/', '/news/', '/blog/', '/article/', '/podcast/', '/webinar/',
+      '/media/', '/gallery/', '/photos/', '/images/', '/video/', '/download/',
+      
+      // Technical areas
+      '/documentation/', '/manual/', '/guide/', '/tutorial/', '/faq/', '/help/',
+      
+      // Customer areas
+      '/support/', '/service/', '/ticket/', '/knowledge-base/',
+      
+      // Marketing areas
+      '/testimonial/', '/casestudy/', '/success-story/',
+      
+      // Product areas
+      '/product/', '/feature/', '/solution/', '/platform/', '/technology/',
+      
+      // Shopping
+      '/shop/', '/store/', '/cart/', '/checkout/', '/order/', '/payment/', '/pricing/',
+      
+      // User account areas
+      '/login/', '/signin/', '/signup/', '/register/', '/account/', '/profile/', '/dashboard/',
+      
+      // Legal pages
+      '/privacy/', '/terms/', '/policy/', '/legal/', '/cookie/', 
+      
+      // Navigation
+      '/sitemap/', '/rss/', '/feed/', '/api/', '/search/', '/404/', '/error/',
+      
+      // Calendar/events
+      '/event/', '/calendar/', '/schedule/', '/agenda/', '/conference/'
+    ];
     
-    // Enhanced site structure discovery
-    while (urlsToDiscover.length > 0 && discoveryPagesScanned < maxDiscoveryPages) {
-      // Sort URLs to prioritize potential career/jobs pages even during discovery
-      urlsToDiscover.sort((a, b) => {
-        const aIsCritical = criticalPagePatterns.some(pattern => pattern.test(a));
-        const bIsCritical = criticalPagePatterns.some(pattern => pattern.test(b));
-        return bIsCritical - aIsCritical;
+    // First check if the URL itself contains any excluded extensions
+    const urlPath = baseUrl.pathname.toLowerCase();
+    if (excludedExtensions.some(ext => urlPath.endsWith(ext))) {
+      return res.status(400).json({
+        error: 'URL appears to be a file, not a webpage',
+        details: 'The provided URL points to a file type that cannot contain emails'
       });
-      
-      const currentUrl = urlsToDiscover.shift();
-      
-      if (processedUrls.has(currentUrl)) {
-        continue;
-      }
-      
-      processedUrls.add(currentUrl);
-      discoveryPagesScanned++;
-      
-      const isCritical = criticalPagePatterns.some(pattern => pattern.test(currentUrl));
-      console.log(`[MAPPING ${discoveryPagesScanned}/${maxDiscoveryPages}] ${isCritical ? '⭐ CRITICAL:' : 'Regular:'} ${currentUrl}`);
-      
-      // Fetch page with minimal delay between requests
-      await new Promise(resolve => setTimeout(resolve, 150));
-      const html = await fetchPage(currentUrl, 3); // More retries for critical pages
-      
-      if (!html) {
-        errors.push(`Failed to fetch during discovery: ${currentUrl}`);
-        continue;
-      }
-      
-      // Classify page importance
-      if (criticalPagePatterns.slice(0, 4).some(pattern => pattern.test(currentUrl))) {
-        criticalPages.add(currentUrl);
-        console.log(`  ⭐⭐ HIGHEST PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
-      } else if (criticalPagePatterns.slice(4, 6).some(pattern => pattern.test(currentUrl))) {
-        criticalPages.add(currentUrl);
-        console.log(`  ⭐ HIGH PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
-      } else if (criticalPagePatterns.slice(6).some(pattern => pattern.test(currentUrl))) {
-        highValuePages.add(currentUrl);
-        console.log(`  🔍 MEDIUM PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
-      } else {
-        regularPages.add(currentUrl);
-      }
-      
-      // While we're here, do a quick scan for emails on critical pages to avoid missing anything
-      if (isCritical) {
-        const quickEmailScan = extractEmails(html, currentUrl);
-        if (quickEmailScan.length > 0) {
-          console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping`);
-          pagesWithEmails.add(currentUrl);
-        }
-      }
-      
-      // Extract all links for further discovery with enhanced extraction
-      let links = extractLinks(html, currentUrl);
-      
-      // Add new links to the discovery queue
-      for (const link of links) {
-        if (!processedUrls.has(link) && !urlsToDiscover.includes(link)) {
-          urlsToDiscover.push(link);
-        }
-      }
     }
     
-    // Reset for Phase 2
-    processedUrls.clear();
+    // Memory-efficient priority queues for URL processing
+    const criticalQueue = [];
+    const highPriorityQueue = [];
+    const regularQueue = [];
     
+    // PHASE 1: SMART SITE MAPPING WITH MEMORY MANAGEMENT
     console.log('='.repeat(50));
-    console.log(`PHASE 1 COMPLETE: Found ${criticalPages.size} critical pages, ${highValuePages.size} high-value pages, ${regularPages.size} regular pages`);
-    console.log(`${pagesWithEmails.size} pages were detected to contain email addresses`);
-    console.log('='.repeat(50));
-    
-    // PHASE 2: INTELLIGENT EMAIL EXTRACTION
-    console.log('='.repeat(50));
-    console.log('PHASE 2: INTELLIGENT EMAIL EXTRACTION');
+    console.log('PHASE 1: MEMORY-OPTIMIZED SMART SITE MAPPING');
     console.log('='.repeat(50));
     
-    // Prepare prioritized URL list for processing
+    // Start with the seed URL
+    let urlsToDiscover = [url];
+    let discoveryPagesScanned = 0;
+    
+    // Calculate discovery limit based on site size expectations
+    const maxDiscoveryPages = Math.min(50, Math.ceil(effectiveMaxPages / 3));
+    
+    // Optimize memory usage by processing URLs in batches
+    const discoveryBatchSize = 10;
+    
+    // Enhanced site structure discovery with memory optimization
+    while (urlsToDiscover.length > 0 && discoveryPagesScanned < maxDiscoveryPages) {
+      // Process in batches to allow for GC between batches
+      const currentBatch = urlsToDiscover.splice(0, discoveryBatchSize);
+      
+      // Process each URL in the batch with proper filtering
+      for (const currentUrl of currentBatch) {
+        // Skip if already processed
+        if (processedUrls.has(currentUrl)) {
+          continue;
+        }
+        
+        // Skip URLs with excluded patterns or extensions
+        const urlObj = new URL(currentUrl);
+        const path = urlObj.pathname.toLowerCase();
+        
+        if (excludedExtensions.some(ext => path.endsWith(ext))) {
+          console.log(`Skipping file URL: ${currentUrl}`);
+          processedUrls.set(currentUrl, { hasEmails: false, priority: -1 });
+          continue;
+        }
+        
+        if (excludedPatterns.some(pattern => path.includes(pattern))) {
+          console.log(`Skipping excluded pattern URL: ${currentUrl}`);
+          processedUrls.set(currentUrl, { hasEmails: false, priority: -1 });
+          continue;
+        }
+        
+        processedUrls.set(currentUrl, { hasEmails: false, priority: 0 });
+        discoveryPagesScanned++;
+        
+        // Determine page criticality for prioritization
+        const isCritical = criticalPagePatterns.some(pattern => pattern.test(currentUrl));
+        console.log(`[MAPPING ${discoveryPagesScanned}/${maxDiscoveryPages}] ${isCritical ? '⭐ CRITICAL:' : 'Regular:'} ${currentUrl}`);
+        
+        // Fetch page with minimal delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const html = await fetchPage(currentUrl, isCritical ? 3 : 1);
+        
+        if (!html) {
+          errors.push(`Failed to fetch during discovery: ${currentUrl}`);
+          continue;
+        }
+        
+        // Classify page importance for queue assignment
+        if (criticalPagePatterns.slice(0, 5).some(pattern => pattern.test(currentUrl))) {
+          criticalQueue.push(currentUrl);
+          processedUrls.set(currentUrl, { hasEmails: false, priority: 3 });
+          console.log(`  ⭐⭐ HIGHEST PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
+        } else if (criticalPagePatterns.slice(5).some(pattern => pattern.test(currentUrl))) {
+          highPriorityQueue.push(currentUrl);
+          processedUrls.set(currentUrl, { hasEmails: false, priority: 2 });
+          console.log(`  ⭐ HIGH PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
+        } else {
+          regularQueue.push(currentUrl);
+          processedUrls.set(currentUrl, { hasEmails: false, priority: 1 });
+        }
+        
+        // Quick scan for emails on critical pages
+        if (isCritical) {
+          const quickEmailScan = extractEmails(html, currentUrl);
+          if (quickEmailScan.length > 0) {
+            console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping`);
+            processedUrls.set(currentUrl, { 
+              hasEmails: true, 
+              priority: processedUrls.get(currentUrl).priority + 1 
+            });
+            
+            // Add HR emails to our collection immediately
+            for (const item of quickEmailScan) {
+              if (item.isHrRelated) {
+                const lowerCaseEmail = item.email.toLowerCase();
+                if (!uniqueEmails.has(lowerCaseEmail)) {
+                  uniqueEmails.set(lowerCaseEmail, { 
+                    count: 1, 
+                    sources: new Set([currentUrl]) 
+                  });
+                  foundEmails.push(item);
+                  totalEmailsFound++;
+                }
+              }
+            }
+          }
+        }
+        
+        // Extract links more efficiently
+        let links = extractLinks(html, currentUrl);
+        
+        // Apply additional filtering for discovery to save memory
+        links = links.filter(link => {
+          try {
+            const linkUrl = new URL(link);
+            const linkPath = linkUrl.pathname.toLowerCase();
+            
+            // Skip URLs with excluded extensions
+            if (excludedExtensions.some(ext => linkPath.endsWith(ext))) {
+              return false;
+            }
+            
+            // Skip URLs with excluded patterns
+            if (excludedPatterns.some(pattern => linkPath.includes(pattern))) {
+              return false;
+            }
+            
+            return true;
+          } catch (e) {
+            return false;
+          }
+        });
+        
+        // Memory optimization: limit discovery breadth
+        const maxLinksPerPage = 20;
+        links = links.slice(0, maxLinksPerPage);
+        
+        // Add new links to the discovery queue (prioritizing potential critical pages)
+        for (const link of links) {
+          if (!processedUrls.has(link) && !urlsToDiscover.includes(link)) {
+            // Prioritize potential career/jobs pages in the discovery queue
+            if (criticalPagePatterns.some(pattern => pattern.test(link))) {
+              urlsToDiscover.unshift(link); // Add to front
+            } else {
+              urlsToDiscover.push(link); // Add to back
+            }
+          }
+        }
+      }
+      
+      // Force garbage collection between batches
+      console.log(`Memory cleanup after batch. Queues: Critical=${criticalQueue.length}, High=${highPriorityQueue.length}, Regular=${regularQueue.length}`);
+      global.gc && global.gc();
+    }
+    
+    console.log('='.repeat(50));
+    console.log(`PHASE 1 COMPLETE: Found ${criticalQueue.length} critical pages, ${highPriorityQueue.length} high-value pages, ${regularQueue.length} regular pages`);
+    console.log(`${[...processedUrls.entries()].filter(([_, data]) => data.hasEmails).length} pages were detected to contain email addresses`);
+    console.log('='.repeat(50));
+    
+    // PHASE 2: OPTIMIZED EMAIL EXTRACTION WITH MEMORY MANAGEMENT
+    console.log('='.repeat(50));
+    console.log('PHASE 2: OPTIMIZED EMAIL EXTRACTION');
+    console.log('='.repeat(50));
+    
+    // Prepare prioritized URL list for processing with strict limits
     const allPrioritizedUrls = [
       // Critical pages first (career/jobs focused)
-      ...criticalPages,
-      // Then pages already known to contain emails (if not already in critical)
-      ...[...pagesWithEmails].filter(url => !criticalPages.has(url)),
+      ...criticalQueue,
       // Then high-value pages (contact, about, etc)
-      ...[...highValuePages].filter(url => !pagesWithEmails.has(url) && !criticalPages.has(url)),
-      // Then regular pages as discovered
-      ...[...regularPages].filter(url => !highValuePages.has(url) && !pagesWithEmails.has(url) && !criticalPages.has(url))
+      ...highPriorityQueue,
+      // Then regular pages with a much stricter limit
+      ...regularQueue.slice(0, Math.min(regularQueue.length, effectiveMaxPages - criticalQueue.length - highPriorityQueue.length))
     ];
     
-    // Respect the page limit
-    let urlsToProcess = allPrioritizedUrls.slice(0, effectiveMaxPages);
+    // Respect the maximum page limit
+    const urlsToProcess = allPrioritizedUrls.slice(0, effectiveMaxPages);
     
-    console.log(`Will process ${criticalPages.size} critical, ${pagesWithEmails.size} email-containing, and ${urlsToProcess.length - criticalPages.size - pagesWithEmails.size} other pages (${urlsToProcess.length} total)`);
+    console.log(`Will process ${criticalQueue.length} critical, ${highPriorityQueue.length} high-value, and ${urlsToProcess.length - criticalQueue.length - highPriorityQueue.length} other pages (${urlsToProcess.length} total)`);
     
     let pagesScanned = 0;
     let hrEmailsFound = 0;
     let potentialHrEmails = 0;
     
-    // Advanced processing with dynamic HR detection improvements
+    // Dynamic HR detection improvements with memory efficiency
     let knownHrDomains = new Set();
     let commonEmailPrefixes = new Set();
     
-    // Process each URL with advanced classification
-    for (const currentUrl of urlsToProcess) {
-      if (processedUrls.has(currentUrl)) {
-        continue;
-      }
+    // Process in smaller batches to optimize memory usage
+    const batchSize = 5;
+    for (let i = 0; i < urlsToProcess.length; i += batchSize) {
+      const batch = urlsToProcess.slice(i, i + batchSize);
       
-      processedUrls.add(currentUrl);
-      pagesScanned++;
-      
-      // Determine page priority for logging
-      let pageType = "Regular";
-      if (criticalPages.has(currentUrl)) pageType = "⭐ CRITICAL";
-      else if (pagesWithEmails.has(currentUrl)) pageType = "📧 HAS EMAILS";
-      else if (highValuePages.has(currentUrl)) pageType = "🔍 HIGH VALUE";
-      
-      console.log(`[${pagesScanned}/${urlsToProcess.length}] ${pageType}: ${currentUrl}`);
-      
-      // Dynamic delay based on page importance
-      const delay = criticalPages.has(currentUrl) ? 300 : 500;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      // Fetch with more retries for important pages
-      const retries = criticalPages.has(currentUrl) ? 4 : 2;
-      const html = await fetchPage(currentUrl, retries);
-      
-      if (!html) {
-        errors.push(`Failed to fetch: ${currentUrl}`);
-        continue;
-      }
-      
-      // Enhanced email extraction with pattern learning
-      const emailsOnPage = extractEmails(html, currentUrl);
-      
-      if (emailsOnPage.length > 0) {
-        // Process each email with dynamic classification improvements
-        let newHrEmails = 0;
-        let newPotentialEmails = 0;
+      // Process each URL in the current batch
+      for (const currentUrl of batch) {
+        // Skip if this URL has already been processed
+        if (processedUrls.get(currentUrl)?.processed) {
+          continue;
+        }
         
-        for (const item of emailsOnPage) {
-          const lowerCaseEmail = item.email.toLowerCase();
-          const [localPart, domain] = lowerCaseEmail.split('@');
+        // Mark as processed
+        processedUrls.set(currentUrl, { 
+          ...processedUrls.get(currentUrl), 
+          processed: true 
+        });
+        
+        pagesScanned++;
+        
+        // Determine page priority for logging
+        let pageType = "Regular";
+        let priority = processedUrls.get(currentUrl)?.priority || 0;
+        
+        if (priority === 3) pageType = "⭐ CRITICAL";
+        else if (priority === 2) pageType = "🔍 HIGH VALUE";
+        else if (processedUrls.get(currentUrl)?.hasEmails) pageType = "📧 HAS EMAILS";
+        
+        console.log(`[${pagesScanned}/${urlsToProcess.length}] ${pageType}: ${currentUrl}`);
+        
+        // Dynamic delay based on page importance to avoid rate limiting
+        const delay = priority >= 2 ? 200 : 300;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        // Fetch with more retries for important pages
+        const retries = priority >= 2 ? 3 : 1;
+        const html = await fetchPage(currentUrl, retries);
+        
+        if (!html) {
+          errors.push(`Failed to fetch: ${currentUrl}`);
+          continue;
+        }
+        
+        // Enhanced email extraction
+        const emailsOnPage = extractEmails(html, currentUrl);
+        
+        if (emailsOnPage.length > 0) {
+          // Process each email with dynamic classification improvements
+          let newHrEmails = 0;
+          let newPotentialEmails = 0;
           
-          // Learning: If we've found HR emails, remember their domains and prefixes
-          if (item.isHrRelated) {
-            knownHrDomains.add(domain);
-            commonEmailPrefixes.add(localPart);
-          }
-          
-          // Dynamic classification improvements:
-          // If email matches pattern of previously found HR emails, upgrade it
-          if (!item.isHrRelated) {
-            if (knownHrDomains.has(domain) || 
-                [...commonEmailPrefixes].some(prefix => 
-                  levenshteinDistance(localPart, prefix) <= 2)) {
-              item.isHrRelated = true;
-              item.context += " [Reclassified as HR due to pattern matching]";
-              potentialHrEmails++;
-              newPotentialEmails++;
-            }
-          }
-          
-          // Process and store HR-related emails
-          if (item.isHrRelated && !uniqueEmails.has(lowerCaseEmail)) {
-            uniqueEmails.add(lowerCaseEmail);
-            foundEmails.push(item);
-            hrEmailsFound++;
-            newHrEmails++;
+          for (const item of emailsOnPage) {
+            const lowerCaseEmail = item.email.toLowerCase();
             
-            // Store in database with enhanced metadata
-            try {
-              const storageResult = await storeEmailInSupabase(supabase, {
-                email: lowerCaseEmail,
-                source: currentUrl,
-                context: item.context || null,
-                isHrRelated: true,
-                pageType: pageType.replace(/[⭐📧🔍 ]/g, '')  // Clean emoji for db storage
-              });
-              
-              if (storageResult.success) {
-                if (storageResult.status === 'inserted') {
-                  emailsStoredInDb++;
-                  console.log(`  ✓ Stored HR email: ${lowerCaseEmail}`);
-                } else {
-                  console.log(`  • HR email already in database: ${lowerCaseEmail}`);
-                }
-              } else {
-                console.log(`  ✗ Failed to store HR email: ${lowerCaseEmail} - ${storageResult.error}`);
-              }
-            } catch (dbError) {
-              console.error(`  ✗ Database error for ${lowerCaseEmail}:`, dbError);
+            // Skip if this exceeds our maximum collection size to prevent memory issues
+            if (foundEmails.length >= 1000) {
+              console.log(`  ⚠️ Email collection cap reached (1000). Skipping additional emails.`);
+              break;
             }
+            
+            // Memory optimization: Check if we've already seen this email
+            if (uniqueEmails.has(lowerCaseEmail)) {
+              const emailData = uniqueEmails.get(lowerCaseEmail);
+              emailData.count++;
+              emailData.sources.add(currentUrl);
+              continue;
+            }
+            
+            const [localPart, domain] = lowerCaseEmail.split('@');
+            
+            // Learning: If we've found HR emails, remember their domains and prefixes
+            if (item.isHrRelated) {
+              knownHrDomains.add(domain);
+              commonEmailPrefixes.add(localPart);
+            }
+            
+            // Dynamic classification improvements:
+            // If email matches pattern of previously found HR emails, upgrade it
+            if (!item.isHrRelated) {
+              if (knownHrDomains.has(domain) || 
+                  [...commonEmailPrefixes].some(prefix => 
+                    levenshteinDistance(localPart, prefix) <= 2)) {
+                item.isHrRelated = true;
+                item.context += " [Reclassified as HR due to pattern matching]";
+                potentialHrEmails++;
+                newPotentialEmails++;
+              }
+            }
+            
+            // Track this email
+            uniqueEmails.set(lowerCaseEmail, { 
+              count: 1, 
+              sources: new Set([currentUrl]) 
+            });
+            
+            // Process and store HR-related emails
+            if (item.isHrRelated) {
+              foundEmails.push(item);
+              hrEmailsFound++;
+              newHrEmails++;
+              
+              // Store in database with enhanced metadata
+              try {
+                const storageResult = await storeEmailInSupabase(supabase, {
+                  email: lowerCaseEmail,
+                  source: currentUrl,
+                  context: item.context || null,
+                  isHrRelated: true,
+                  pageType: pageType.replace(/[⭐📧🔍 ]/g, '')  // Clean emoji for db storage
+                });
+                
+                if (storageResult.success) {
+                  if (storageResult.status === 'inserted') {
+                    emailsStoredInDb++;
+                    console.log(`  ✓ Stored HR email: ${lowerCaseEmail}`);
+                  } else {
+                    console.log(`  • HR email already in database: ${lowerCaseEmail}`);
+                  }
+                } else {
+                  console.log(`  ✗ Failed to store HR email: ${lowerCaseEmail} - ${storageResult.error}`);
+                }
+              } catch (dbError) {
+                console.error(`  ✗ Database error for ${lowerCaseEmail}:`, dbError);
+              }
+            }
+          }
+          
+          // Log results specifically showing HR classification
+          if (newHrEmails > 0 || newPotentialEmails > 0) {
+            console.log(`  Found ${newHrEmails} new HR email(s) and reclassified ${newPotentialEmails} as potential HR emails`);
           }
         }
         
-        // Log results specifically showing HR classification
-        console.log(`  Found ${newHrEmails} new HR email(s) and reclassified ${newPotentialEmails} as potential HR emails`);
+        // Progress report with enhanced statistics
+        const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+        const pagesPerSecond = (pagesScanned / elapsedSeconds).toFixed(2);
+        console.log(`  Progress: ${pagesScanned}/${urlsToProcess.length} pages | ${hrEmailsFound} HR emails | ${potentialHrEmails} potential HR emails | ${emailsStoredInDb} stored in DB | ${pagesPerSecond} p/s`);
       }
       
-      // Progress report with enhanced statistics
-      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-      const pagesPerSecond = (pagesScanned / elapsedSeconds).toFixed(2);
-      console.log(`  Progress: ${pagesScanned}/${urlsToProcess.length} pages | ${hrEmailsFound} HR emails | ${potentialHrEmails} potential HR emails | ${emailsStoredInDb} stored in DB | ${pagesPerSecond} p/s`);
+      // Force garbage collection between batches
+      console.log(`Memory cleanup after batch ${Math.ceil(i/batchSize)}/${Math.ceil(urlsToProcess.length/batchSize)}.`);
+      global.gc && global.gc();
     }
     
     // Final scan report with detailed statistics
@@ -301,9 +470,9 @@ app.post('/scrape', async (req, res) => {
     console.log('ULTRA-POWERFUL SCAN COMPLETED');
     console.log('='.repeat(50));
     console.log(`Total pages scanned: ${pagesScanned}`);
-    console.log(` - Critical pages: ${[...processedUrls].filter(url => criticalPages.has(url)).length}`);
-    console.log(` - Pages with emails: ${[...processedUrls].filter(url => pagesWithEmails.has(url)).length}`);
-    console.log(` - High-value pages: ${[...processedUrls].filter(url => highValuePages.has(url)).length}`);
+    console.log(` - Critical pages: ${criticalQueue.length}`);
+    console.log(` - High-value pages: ${highPriorityQueue.length}`);
+    console.log(` - Regular pages: ${pagesScanned - criticalQueue.length - highPriorityQueue.length}`);
     console.log(`Total HR emails found: ${hrEmailsFound}`);
     console.log(`Additional potential HR emails identified: ${potentialHrEmails}`);
     console.log(`Total emails stored in database: ${emailsStoredInDb}`);
@@ -316,45 +485,54 @@ app.post('/scrape', async (req, res) => {
     
     console.log('='.repeat(50));
     
-    // Enhanced analytics for better insights
-    const emailsByDomain = foundEmails.reduce((acc, item) => {
-      const domain = item.email.split('@')[1];
-      if (!acc[domain]) {
-        acc[domain] = [];
-      }
-      acc[domain].push(item.email);
-      return acc;
-    }, {});
+    // Memory-efficient analytics
+    const emailsByDomain = {};
+    const emailsByPattern = {};
     
-    // Group by email pattern for insights
-    const emailsByPattern = foundEmails.reduce((acc, item) => {
-      const localPart = item.email.split('@')[0];
-      // Group by common prefixes
+    // Limit the analysis to avoid memory pressure
+    const analysisLimit = Math.min(foundEmails.length, 500);
+    
+    for (let i = 0; i < analysisLimit; i++) {
+      const item = foundEmails[i];
+      const [localPart, domain] = item.email.toLowerCase().split('@');
+      
+      // Group by domain
+      if (!emailsByDomain[domain]) {
+        emailsByDomain[domain] = [];
+      }
+      if (emailsByDomain[domain].length < 20) { // Limit per domain
+        emailsByDomain[domain].push(item.email);
+      }
+      
+      // Group by pattern
       const prefix = localPart.match(/^[a-z]+/i)?.[0] || 'other';
-      if (!acc[prefix]) {
-        acc[prefix] = [];
+      if (!emailsByPattern[prefix]) {
+        emailsByPattern[prefix] = [];
       }
-      acc[prefix].push(item.email);
-      return acc;
-    }, {});
+      if (emailsByPattern[prefix].length < 20) { // Limit per pattern
+        emailsByPattern[prefix].push(item.email);
+      }
+    }
     
-    // Return comprehensive results
+    // Return comprehensive results with memory optimization
     return res.json({ 
       success: true,
       stats: {
         pagesScanned,
-        criticalPagesScanned: [...processedUrls].filter(url => criticalPages.has(url)).length,
-        pagesWithEmailsScanned: [...processedUrls].filter(url => pagesWithEmails.has(url)).length,
+        criticalPagesScanned: criticalQueue.length,
+        highValuePagesScanned: highPriorityQueue.length,
+        regularPagesScanned: pagesScanned - criticalQueue.length - highPriorityQueue.length,
         totalHrEmailsFound: hrEmailsFound,
         potentialHrEmailsFound: potentialHrEmails,
         emailsStoredInDb,
-        scanDurationSeconds: totalTimeSeconds
+        scanDurationSeconds: totalTimeSeconds,
+        memoryOptimized: true
       },
-      emailDetails: foundEmails,
+      // Limit result size to prevent large payloads
+      emailDetails: foundEmails.slice(0, 100), // Only return first 100 for API response
       emailsByDomain,
       emailsByPattern,
-      criticalPagesScanned: Array.from(criticalPages).filter(url => processedUrls.has(url)),
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors.slice(0, 50) : undefined // Limit error reporting
     });    
   } catch (error) {
     console.error('Scraping error:', error);
@@ -366,79 +544,31 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
-// Utility for checking similarity between email prefixes
-function levenshteinDistance(a, b) {
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
-
-  const matrix = [];
-
-  // Initialize matrix
-  for (let i = 0; i <= b.length; i++) {
-    matrix[i] = [i];
+// Add memory optimization middleware
+app.use((req, res, next) => {
+  // Force garbage collection if available (requires --expose-gc flag)
+  if (global.gc) {
+    global.gc();
+    console.log('Garbage collection forced before request processing');
   }
-  for (let j = 0; j <= a.length; j++) {
-    matrix[0][j] = j;
-  }
-
-  // Fill matrix
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1, // substitution
-          matrix[i][j - 1] + 1,     // insertion
-          matrix[i - 1][j] + 1      // deletion
-        );
-      }
-    }
-  }
-
-  return matrix[b.length][a.length];
-}
-
-// Enhanced email extraction with improved HR detection
-function extractEnhancedEmails(html, pageUrl) {
-  // Base implementation from your code
-  const emailsOnPage = extractEmails(html, pageUrl);
-  
-  // Additional HTML parsing for structured data like contact forms
-  const $ = cheerio.load(html);
-  
-  // Scan for contact forms which often contain hidden email addresses
-  $('form').each((_, form) => {
-    // Look for email input fields
-    $(form).find('input[type="email"]').each((_, input) => {
-      const placeholder = $(input).attr('placeholder');
-      if (placeholder && placeholder.toLowerCase().includes('email')) {
-        // Capture form context for HR classification
-        const formText = $(form).text().trim();
-        const formAction = $(form).attr('action') || '';
-        
-        // If this appears to be a job application or contact form
-        if (formText.match(/job|career|apply|contact|resume|cv/i) || 
-            formAction.match(/job|career|apply|contact/i)) {
-          emailsOnPage.push({
-            email: 'contact@' + new URL(pageUrl).hostname, // Generate likely contact email
-            isHrRelated: true,
-            context: `Contact form found - likely HR contact point (${formText.substring(0, 100)}...)`,
-            foundOn: pageUrl,
-            confidence: 'medium',
-            source: 'contact_form'
-          });
-        }
-      }
-    });
-  });
-  
-  return emailsOnPage;
-}// Status endpoint to check if server is running
-app.get('/status', (req, res) => {
-  res.json({ status: 'Server is running' });
+  next();
 });
 
+// Status endpoint to check if server is running with memory usage info
+app.get('/status', (req, res) => {
+  const memoryUsage = process.memoryUsage();
+  
+  return res.json({
+    status: 'running',
+    memory: {
+      rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`,
+      heapTotal: `${(memoryUsage.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+      heapUsed: `${(memoryUsage.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+      external: `${(memoryUsage.external / 1024 / 1024).toFixed(2)} MB`
+    },
+    uptime: `${(process.uptime() / 60).toFixed(2)} minutes`
+  });
+});
 // Register the bulk scraper routes
 app.use(bulkScraper);
 
