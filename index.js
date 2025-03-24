@@ -150,44 +150,10 @@ app.post('/scrape', async (req, res) => {
           const quickEmailScan = extractEmails(html, currentUrl);
           if (quickEmailScan.length > 0) {
             console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping:`);
-            // Display the detected emails and immediately store HR-related ones
-            for (let index = 0; index < quickEmailScan.length; index++) {
-              const emailItem = quickEmailScan[index];
+            // Display the detected emails
+            quickEmailScan.forEach((emailItem, index) => {
               console.log(`    ${index + 1}. ${emailItem.email} ${emailItem.isHrRelated ? '(HR Related)' : ''}`);
-              
-              // Immediately add HR-related emails to the database
-              if (emailItem.isHrRelated) {
-                const lowerCaseEmail = emailItem.email.toLowerCase();
-                if (!uniqueEmails.has(lowerCaseEmail)) {
-                  uniqueEmails.add(lowerCaseEmail);
-                  foundEmails.push(emailItem);
-                  
-                  // Store HR email immediately in database
-                  try {
-                    const storageResult = await storeEmailInSupabase(supabase, {
-                      email: lowerCaseEmail,
-                      source: currentUrl,
-                      context: emailItem.context || null,
-                      isHrRelated: true,
-                      pageType: 'CRITICAL'
-                    });
-                    
-                    if (storageResult.success) {
-                      if (storageResult.status === 'inserted') {
-                        emailsStoredInDb++;
-                        console.log(`  ✓ Immediately stored HR email during mapping: ${lowerCaseEmail}`);
-                      } else {
-                        console.log(`  • HR email already in database: ${lowerCaseEmail}`);
-                      }
-                    } else {
-                      console.log(`  ✗ Failed to store HR email: ${lowerCaseEmail} - ${storageResult.error}`);
-                    }
-                  } catch (dbError) {
-                    console.error(`  ✗ Database error for ${lowerCaseEmail}:`, dbError);
-                  }
-                }
-              }
-            }
+            });
             
             pagesWithEmails.add(currentUrl);
           }
@@ -310,37 +276,35 @@ app.post('/scrape', async (req, res) => {
               }
             }
             
-            // Process and store HR-related emails IMMEDIATELY
-            if (item.isHrRelated) {
-              if (!uniqueEmails.has(lowerCaseEmail)) {
-                uniqueEmails.add(lowerCaseEmail);
-                foundEmails.push(item);
-                hrEmailsFound++;
-                newHrEmails++;
+            // Process and store HR-related emails
+            if (item.isHrRelated && !uniqueEmails.has(lowerCaseEmail)) {
+              uniqueEmails.add(lowerCaseEmail);
+              foundEmails.push(item);
+              hrEmailsFound++;
+              newHrEmails++;
+              
+              // Store in database with enhanced metadata
+              try {
+                const storageResult = await storeEmailInSupabase(supabase, {
+                  email: lowerCaseEmail,
+                  source: currentUrl,
+                  context: item.context || null,
+                  isHrRelated: true,
+                  pageType: pageType.replace(/[⭐📧🔍 ]/g, '')  // Clean emoji for db storage
+                });
                 
-                // Store in database with enhanced metadata immediately
-                try {
-                  const storageResult = await storeEmailInSupabase(supabase, {
-                    email: lowerCaseEmail,
-                    source: currentUrl,
-                    context: item.context || null,
-                    isHrRelated: true,
-                    pageType: pageType.replace(/[⭐📧🔍 ]/g, '')  // Clean emoji for db storage
-                  });
-                  
-                  if (storageResult.success) {
-                    if (storageResult.status === 'inserted') {
-                      emailsStoredInDb++;
-                      console.log(`  ✓ Stored HR email: ${lowerCaseEmail}`);
-                    } else {
-                      console.log(`  • HR email already in database: ${lowerCaseEmail}`);
-                    }
+                if (storageResult.success) {
+                  if (storageResult.status === 'inserted') {
+                    emailsStoredInDb++;
+                    console.log(`  ✓ Stored HR email: ${lowerCaseEmail}`);
                   } else {
-                    console.log(`  ✗ Failed to store HR email: ${lowerCaseEmail} - ${storageResult.error}`);
+                    console.log(`  • HR email already in database: ${lowerCaseEmail}`);
                   }
-                } catch (dbError) {
-                  console.error(`  ✗ Database error for ${lowerCaseEmail}:`, dbError);
+                } else {
+                  console.log(`  ✗ Failed to store HR email: ${lowerCaseEmail} - ${storageResult.error}`);
                 }
+              } catch (dbError) {
+                console.error(`  ✗ Database error for ${lowerCaseEmail}:`, dbError);
               }
             }
           }
