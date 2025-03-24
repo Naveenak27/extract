@@ -1,4 +1,4 @@
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
 
 // Improved email extraction with expanded HR classification and duplicate prevention
@@ -111,6 +111,7 @@ const extractEmails = (html, pageUrl) => {
   
   return emailDetails;
 };
+
 // Extract all links from a page
 const extractLinks = (html, baseUrl) => {
   const $ = cheerio.load(html);
@@ -151,32 +152,59 @@ const extractLinks = (html, baseUrl) => {
   return [...links];
 };
 
-// Improved page fetcher with retry logic
-const fetchPage = async (url, retries = 2) => {
+// Improved page fetcher with Puppeteer for dynamic content
+const fetchPage = async (url, browser, retries = 2) => {
+  let page = null;
+  
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       console.log(`Fetching: ${url} (Attempt ${attempt + 1}/${retries + 1})`);
       
-      const response = await axios.get(url, { 
-        timeout: 15000, // 15 seconds timeout
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Cache-Control': 'max-age=0'
-        },
-        maxRedirects: 5
+      // Create a new page for each request to avoid contamination
+      page = await browser.newPage();
+      
+      // Set viewport
+      await page.setViewport({ width: 1280, height: 800 });
+      
+      // Set user agent
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+      
+      // Set timeout for navigation
+      await page.setDefaultNavigationTimeout(30000); // 30 seconds
+      
+      // Configure request interception to block unnecessary resources
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        const resourceType = req.resourceType();
+        if (resourceType === 'image' || resourceType === 'font' || resourceType === 'media') {
+          req.abort();
+        } else {
+          req.continue();
+        }
       });
       
-      return response.data;
-    } catch (error) {
-      const errorMsg = error.code === 'ECONNABORTED' 
-        ? `Timeout fetching ${url}` 
-        : `Error fetching ${url}: ${error.message}`;
+      // Navigate to the URL
+      await page.goto(url, { waitUntil: 'networkidle2' });
       
-      console.log(`${errorMsg} (Attempt ${attempt + 1}/${retries + 1})`);
+      // Wait for content to load (adjust selectors as needed)
+      await page.waitForSelector('body', { timeout: 5000 }).catch(() => {});
+      
+      // Optional: Scroll to load lazy-loaded content
+      await autoScroll(page);
+      
+      // Get the HTML content
+      const html = await page.content();
+      
+      // Close the page
+      await page.close();
+      
+      return html;
+    } catch (error) {
+      console.log(`Error fetching ${url}: ${error.message} (Attempt ${attempt + 1}/${retries + 1})`);
+      
+      if (page) {
+        await page.close().catch(() => {});
+      }
       
       if (attempt === retries) {
         return null;
@@ -189,6 +217,26 @@ const fetchPage = async (url, retries = 2) => {
   
   return null;
 };
+
+// Helper function to scroll page to load lazy content
+async function autoScroll(page) {
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      let totalHeight = 0;
+      const distance = 100;
+      const timer = setInterval(() => {
+        const scrollHeight = document.body.scrollHeight;
+        window.scrollBy(0, distance);
+        totalHeight += distance;
+        
+        if (totalHeight >= scrollHeight || totalHeight > 10000) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 100);
+    });
+  });
+}
 
 // Prioritize URLs based on job relevance
 const prioritizeUrls = (urls) => {
@@ -230,9 +278,7 @@ const prioritizeUrls = (urls) => {
   // Return URLs with critical priority first
   return [...criticalPriority, ...highPriority, ...mediumPriority, ...lowPriority];
 };
-// Add this function to your scraper-utils.js file
 
-/**
 /**
  * Stores an email in the Supabase database
  * @param {Object} supabase - Supabase client instance
@@ -289,10 +335,92 @@ const storeEmailInSupabase = async (supabase, emailData) => {
     // Return false but don't throw to avoid stopping the scraping process
     return { success: false, error: error.message };
   }
-};module.exports = {
-    storeEmailInSupabase,
+};
+
+// Main scraper function with Puppeteer
+const scrapeWebsite = async (startUrl, supabase, maxPages = 50) => {
+  const visitedUrls = new Set();
+  const pendingUrls = [startUrl];
+  const foundEmails = [];
+  
+  // Launch browser
+  const browser = await puppeteer.launch({
+    headless: 'new', // Use new headless mode
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--window-size=1280,800'
+    ]
+  });
+  
+  try {
+    while (pendingUrls.length > 0 && visitedUrls.size < maxPages) {
+      // Get next URL with priority
+      const nextUrl = pendingUrls.shift();
+      
+      // Skip if already visited
+      if (visitedUrls.has(nextUrl)) {
+        continue;
+      }
+      
+      // Mark as visited
+      visitedUrls.add(nextUrl);
+      
+      // Fetch page content
+      const html = await fetchPage(nextUrl, browser);
+      if (!html) continue;
+      
+      // Extract emails
+      const emailsFound = extractEmails(html, nextUrl);
+      
+      // Store emails in database and add to results
+      for (const emailData of emailsFound) {
+        if (supabase) {
+          await storeEmailInSupabase(supabase, {
+            email: emailData.email,
+            source: nextUrl,
+            context: emailData.context,
+            isHrRelated: emailData.isHrRelated
+          });
+        }
+        foundEmails.push(emailData);
+      }
+      
+      // Extract and queue new links
+      const links = extractLinks(html, nextUrl);
+      const prioritizedLinks = prioritizeUrls(links);
+      
+      // Add new links to pending queue
+      for (const link of prioritizedLinks) {
+        if (!visitedUrls.has(link)) {
+          pendingUrls.unshift(link); // Add high priority links to the front
+        }
+      }
+      
+      // Optional: Add delay between requests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  } finally {
+    // Close browser
+    await browser.close();
+  }
+  
+  return {
+    visitedPages: Array.from(visitedUrls),
+    totalPagesScanned: visitedUrls.size,
+    totalEmailsFound: foundEmails.length,
+    emails: foundEmails
+  };
+};
+
+module.exports = {
   extractEmails,
   extractLinks,
   fetchPage,
-  prioritizeUrls
+  prioritizeUrls,
+  storeEmailInSupabase,
+  scrapeWebsite
 };
