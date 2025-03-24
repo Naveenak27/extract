@@ -16,7 +16,11 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY; // Make sure to set this in your 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Middleware
-app.use(cors());
+
+app.use(cors({
+  origin: 'https://resume-sender.netlify.app',
+  // rest of configuration
+}));
 app.use(express.json());
 
 // Main scraping endpoint
