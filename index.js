@@ -15,14 +15,18 @@ const SUPABASE_URL = 'https://iweptmijpkljukcmroxv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY; // Make sure to set this in your environment
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Middleware
-
-// Enable CORS for all routes
+// More comprehensive CORS settings
 app.use(cors({
-  origin: 'https://resume-sender.netlify.app', // Your frontend domain
-  methods: ['GET', 'POST', 'OPTIONS'], // Allowed methods
-  allowedHeaders: ['Content-Type', 'Authorization'] // Allowed headers
+  origin: '*', // In production, specify your frontend domain like 'https://resume-sender.netlify.app'
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'X-Requested-With'],
+  credentials: true,
+  optionsSuccessStatus: 204
 }));
+
+// Handle OPTIONS preflight requests explicitly
+app.options('*', cors());
+
 app.use(express.json());
 
 // Main scraping endpoint
@@ -64,9 +68,11 @@ app.post('/scrape', async (req, res) => {
     // Track unique emails (case insensitive)
     const uniqueEmails = new Set();
     
-    // Launch Puppeteer browser
+    // Launch Puppeteer browser with fixed path
     const browser = await puppeteer.launch({
       headless: 'new', // Use new headless mode
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
+                    '/opt/render/.cache/puppeteer/chrome/linux-134.0.6998.35/chrome-linux64/chrome',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -75,7 +81,6 @@ app.post('/scrape', async (req, res) => {
         '--disable-gpu',
         '--window-size=1280,800'
       ]
-      
     });
     
     try {
@@ -437,6 +442,7 @@ app.post('/scrape', async (req, res) => {
   } catch (error) {
     console.error('Scraping error:', error);
     return res.status(500).json({ 
+      success: false,
       error: 'Failed to scrape website', 
       message: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
