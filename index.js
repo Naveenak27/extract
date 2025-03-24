@@ -69,22 +69,36 @@ app.post('/scrape', async (req, res) => {
     // Fixed Puppeteer launch configuration for cloud environments
    // Replace your current browser launch code with this:
 // Replace your current browser launch code with this:
-const browser = await puppeteer.launch({
-  headless: 'new',
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--disable-gpu',
-    '--window-size=1280,800'
-  ],
-  ignoreHTTPSErrors: true,
-});
-
+// Replace your browser launch code with this:
+let browser;
+try {
+  // First try default approach with puppeteer
+  const puppeteer = require('puppeteer');
+  browser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--window-size=1280,800'
+    ],
+    ignoreHTTPSErrors: true,
+  });
+} catch (err) {
+  console.log('Error launching with default settings, trying alternative method:', err.message);
+  // Fallback to puppeteer-core with chrome-aws-lambda
+  const chromium = require('chrome-aws-lambda');
+  const puppeteerCore = require('puppeteer-core');
+  
+  browser = await puppeteerCore.launch({
+    headless: chromium.headless,
+    args: chromium.args,
+    executablePath: await chromium.executablePath,
+    ignoreHTTPSErrors: true,
+  });
+}
     
     try {
       // PHASE 1: COMPREHENSIVE SITE MAPPING
