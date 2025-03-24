@@ -68,18 +68,21 @@ app.post('/scrape', async (req, res) => {
     
     // Fixed Puppeteer launch configuration for cloud environments
    // Replace your current browser launch code with this:
+// Replace your current browser launch code with this:
 const browser = await puppeteer.launch({
   headless: 'new',
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
     '--disable-gpu',
     '--window-size=1280,800'
   ],
   ignoreHTTPSErrors: true,
-  // Remove any executablePath setting if present
 });
 
     
