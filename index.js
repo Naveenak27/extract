@@ -67,19 +67,21 @@ app.post('/scrape', async (req, res) => {
     const uniqueEmails = new Set();
     
     // Fixed Puppeteer launch configuration for cloud environments
-    const browser = await puppeteer.launch({
-      headless: 'new', // Use new headless mode
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
-        '--window-size=1280,800'
-      ],
-      // Remove explicit executablePath to let Puppeteer find the browser
-      ignoreHTTPSErrors: true
-    });
+   // Replace your current browser launch code with this:
+const browser = await puppeteer.launch({
+  headless: 'new',
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--disable-gpu',
+    '--window-size=1280,800'
+  ],
+  ignoreHTTPSErrors: true,
+  // Remove any executablePath setting if present
+});
+
     
     try {
       // PHASE 1: COMPREHENSIVE SITE MAPPING
