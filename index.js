@@ -15,12 +15,16 @@ const SUPABASE_URL = 'https://iweptmijpkljukcmroxv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY; // Make sure to set this in your environment
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Middleware
-
+// Improved CORS configuration
 app.use(cors({
-  origin: 'https://resume-sender.netlify.app',
-  // rest of configuration
+  origin: '*', // Allow all origins - you can restrict this to specific domains in production
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Add OPTIONS handler for preflight requests
+app.options('*', cors());
+
 app.use(express.json());
 
 // Main scraping endpoint
@@ -62,9 +66,9 @@ app.post('/scrape', async (req, res) => {
     // Track unique emails (case insensitive)
     const uniqueEmails = new Set();
     
-    // Launch Puppeteer browser with updated configuration
+    // Fixed Puppeteer launch configuration for cloud environments
     const browser = await puppeteer.launch({
-      headless: 'new',
+      headless: 'new', // Use new headless mode
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -73,9 +77,8 @@ app.post('/scrape', async (req, res) => {
         '--disable-gpu',
         '--window-size=1280,800'
       ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
-                     process.env.CHROME_PATH || 
-                     '/usr/bin/google-chrome-stable'
+      // Remove explicit executablePath to let Puppeteer find the browser
+      ignoreHTTPSErrors: true
     });
     
     try {
