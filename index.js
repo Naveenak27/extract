@@ -28,122 +28,87 @@ app.options('*', cors());
 app.use(express.json());
 
 // Main scraping endpoint
-// Main scraping endpoint with improved batch processing
 app.post('/scrape', async (req, res) => {
   try {
-    const { urls, maxPages = 100, thoroughScan = false } = req.body;
+    // Accept either a single URL or an array of URLs
+    const { url, urls, maxPages = 100, thoroughScan = false } = req.body;
     
-    // Better URL validation and normalization
-    // Check if urls is provided as a string, array, or CSV format
-    let urlsToProcess = [];
-    
-    if (!urls) {
-      return res.status(400).json({ error: 'URLs are required' });
-    }
-    
-    // Handle different input formats
-    if (typeof urls === 'string') {
-      // If it's a comma-separated string, split it
-      if (urls.includes(',')) {
-        urlsToProcess = urls.split(',').map(url => url.trim());
-      } else {
-        // Single URL as a string
-        urlsToProcess = [urls.trim()];
-      }
-    } else if (Array.isArray(urls)) {
-      // Already an array
-      urlsToProcess = urls;
-    } else {
-      return res.status(400).json({ 
-        error: 'URLs must be provided as a string, comma-separated list, or array' 
-      });
-    }
-    
-    // Remove empty entries and duplicates
-    urlsToProcess = [...new Set(urlsToProcess.filter(url => url && url.trim().length > 0))];
+    // Process URLs - handle both single url and array input formats
+    const urlsToProcess = urls ? 
+      (Array.isArray(urls) ? urls : [urls]) : 
+      (url ? [url] : []);
     
     if (urlsToProcess.length === 0) {
-      return res.status(400).json({ error: 'No valid URLs provided' });
+      return res.status(400).json({ error: 'At least one URL is required' });
     }
     
     // Allow overriding the max pages for thorough scans
     const effectiveMaxPages = thoroughScan ? 300 : maxPages;
     
-    // Validate all URLs and prepare them
-    const validatedUrls = [];
-    const invalidUrls = [];
-    
-    for (const url of urlsToProcess) {
+    // Validate all URLs
+    for (const urlToCheck of urlsToProcess) {
       try {
-        // Ensure the URL has a protocol
-        let processedUrl = url;
-        if (!url.startsWith('http://') && !url.startsWith('https://')) {
-          processedUrl = 'https://' + url;
-        }
-        
-        // Validate the URL
-        new URL(processedUrl);
-        validatedUrls.push(processedUrl);
+        new URL(urlToCheck);
       } catch (e) {
-        invalidUrls.push({ url, error: 'Invalid URL format' });
+        return res.status(400).json({ error: `Invalid URL format: ${urlToCheck}` });
       }
     }
     
-    if (validatedUrls.length === 0) {
-      return res.status(400).json({ 
-        error: 'No valid URLs provided', 
-        invalidUrls 
-      });
-    }
-    
     console.log('='.repeat(50));
-    console.log(`STARTING ULTRA-POWERFUL HR EMAIL EXTRACTION FOR ${validatedUrls.length} URLs`);
+    console.log(`STARTING ULTRA-POWERFUL HR EMAIL EXTRACTION FOR ${urlsToProcess.length} URLs`);
     console.log(`Maximum pages to scan per URL: ${effectiveMaxPages}`);
     console.log(`Thorough scan mode: ${thoroughScan ? 'ENABLED' : 'DISABLED'}`);
     console.log('='.repeat(50));
     
-    // Track overall progress
-    const startTime = Date.now();
-    const results = [];
+    // Overall results
+    const overallResults = {
+      totalPagesScanned: 0,
+      totalEmailsFound: 0,
+      totalHrEmailsFound: 0,
+      totalEmailsStoredInDb: 0,
+      totalScanDurationSeconds: 0,
+      urlResults: []
+    };
     
-    // Fixed Puppeteer launch configuration for cloud environments
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
-        '--window-size=1280,800'
-      ],
-      ignoreHTTPSErrors: true,
-    });
-    
-    try {
-      // Process each URL sequentially
-      for (let urlIndex = 0; urlIndex < validatedUrls.length; urlIndex++) {
-        const url = validatedUrls[urlIndex];
-        console.log('='.repeat(50));
-        console.log(`PROCESSING URL ${urlIndex + 1}/${validatedUrls.length}: ${url}`);
-        console.log('='.repeat(50));
-        
-        // Tracking variables for this specific URL
-        let totalEmailsFound = 0;
-        let emailsStoredInDb = 0;
-        
-        // Track processed URLs and pages with emails
-        const processedUrls = new Set();
-        const pagesWithEmails = new Set();
-        const foundEmails = [];
-        const errors = [];
-        
-        // Track unique emails (case insensitive)
-        const uniqueEmails = new Set();
-        
+    // Process each URL one by one
+    for (let urlIndex = 0; urlIndex < urlsToProcess.length; urlIndex++) {
+      const currentUrl = urlsToProcess[urlIndex];
+      console.log('='.repeat(50));
+      console.log(`PROCESSING URL ${urlIndex + 1}/${urlsToProcess.length}: ${currentUrl}`);
+      console.log('='.repeat(50));
+      
+      // Track progress for this URL
+      const startTime = Date.now();
+      let totalEmailsFound = 0;
+      let emailsStoredInDb = 0;
+      
+      // Track processed URLs and pages with emails for this URL
+      const processedUrls = new Set();
+      const pagesWithEmails = new Set();
+      const foundEmails = [];
+      const errors = [];
+      
+      // Track unique emails (case insensitive)
+      const uniqueEmails = new Set();
+      
+      // Launch a new browser instance for each URL to prevent memory issues
+      const browser = await puppeteer.launch({
+        headless: 'new',
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--window-size=1280,800'
+        ],
+        ignoreHTTPSErrors: true,
+      });
+      
+      try {
         // PHASE 1: COMPREHENSIVE SITE MAPPING
         console.log('='.repeat(50));
-        console.log('PHASE 1: COMPREHENSIVE SITE MAPPING');
+        console.log(`PHASE 1: COMPREHENSIVE SITE MAPPING FOR ${currentUrl}`);
         console.log('='.repeat(50));
         
         // Critical page patterns - these MUST be checked
@@ -166,7 +131,7 @@ app.post('/scrape', async (req, res) => {
         const highValuePages = new Set();
         const regularPages = new Set();
         
-        let urlsToDiscover = [url];
+        let urlsToDiscover = [currentUrl];
         let discoveryPagesScanned = 0;
         const maxDiscoveryPages = Math.min(100, effectiveMaxPages / 2);
         
@@ -179,44 +144,44 @@ app.post('/scrape', async (req, res) => {
             return bIsCritical - aIsCritical;
           });
           
-          const currentUrl = urlsToDiscover.shift();
+          const currentDiscoveryUrl = urlsToDiscover.shift();
           
-          if (processedUrls.has(currentUrl)) {
+          if (processedUrls.has(currentDiscoveryUrl)) {
             continue;
           }
           
-          processedUrls.add(currentUrl);
+          processedUrls.add(currentDiscoveryUrl);
           discoveryPagesScanned++;
           
-          const isCritical = criticalPagePatterns.some(pattern => pattern.test(currentUrl));
-          console.log(`[MAPPING ${discoveryPagesScanned}/${maxDiscoveryPages}] ${isCritical ? '⭐ CRITICAL:' : 'Regular:'} ${currentUrl}`);
+          const isCritical = criticalPagePatterns.some(pattern => pattern.test(currentDiscoveryUrl));
+          console.log(`[MAPPING ${discoveryPagesScanned}/${maxDiscoveryPages}] ${isCritical ? '⭐ CRITICAL:' : 'Regular:'} ${currentDiscoveryUrl}`);
           
           // Fetch page with minimal delay between requests using Puppeteer
           await new Promise(resolve => setTimeout(resolve, 150));
-          const html = await fetchPage(currentUrl, browser, 3); // More retries for critical pages
+          const html = await fetchPage(currentDiscoveryUrl, browser, 3); // More retries for critical pages
           
           if (!html) {
-            errors.push(`Failed to fetch during discovery: ${currentUrl}`);
+            errors.push(`Failed to fetch during discovery: ${currentDiscoveryUrl}`);
             continue;
           }
           
           // Classify page importance
-          if (criticalPagePatterns.slice(0, 4).some(pattern => pattern.test(currentUrl))) {
-            criticalPages.add(currentUrl);
-            console.log(`  ⭐⭐ HIGHEST PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
-          } else if (criticalPagePatterns.slice(4, 6).some(pattern => pattern.test(currentUrl))) {
-            criticalPages.add(currentUrl);
-            console.log(`  ⭐ HIGH PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
-          } else if (criticalPagePatterns.slice(6).some(pattern => pattern.test(currentUrl))) {
-            highValuePages.add(currentUrl);
-            console.log(`  🔍 MEDIUM PRIORITY PAGE IDENTIFIED: ${currentUrl}`);
+          if (criticalPagePatterns.slice(0, 4).some(pattern => pattern.test(currentDiscoveryUrl))) {
+            criticalPages.add(currentDiscoveryUrl);
+            console.log(`  ⭐⭐ HIGHEST PRIORITY PAGE IDENTIFIED: ${currentDiscoveryUrl}`);
+          } else if (criticalPagePatterns.slice(4, 6).some(pattern => pattern.test(currentDiscoveryUrl))) {
+            criticalPages.add(currentDiscoveryUrl);
+            console.log(`  ⭐ HIGH PRIORITY PAGE IDENTIFIED: ${currentDiscoveryUrl}`);
+          } else if (criticalPagePatterns.slice(6).some(pattern => pattern.test(currentDiscoveryUrl))) {
+            highValuePages.add(currentDiscoveryUrl);
+            console.log(`  🔍 MEDIUM PRIORITY PAGE IDENTIFIED: ${currentDiscoveryUrl}`);
           } else {
-            regularPages.add(currentUrl);
+            regularPages.add(currentDiscoveryUrl);
           }
           
           // While we're here, do a quick scan for emails on critical pages to avoid missing anything
           if (isCritical) {
-            const quickEmailScan = extractEmails(html, currentUrl);
+            const quickEmailScan = extractEmails(html, currentDiscoveryUrl);
             if (quickEmailScan.length > 0) {
               console.log(`  📧 ${quickEmailScan.length} emails detected on critical page during mapping:`);
               // Display the detected emails and immediately store HR-related ones
@@ -235,7 +200,7 @@ app.post('/scrape', async (req, res) => {
                     try {
                       const storageResult = await storeEmailInSupabase(supabase, {
                         email: lowerCaseEmail,
-                        source: currentUrl,
+                        source: currentDiscoveryUrl,
                         context: emailItem.context || null,
                         isHrRelated: true,
                         pageType: 'CRITICAL'
@@ -258,12 +223,12 @@ app.post('/scrape', async (req, res) => {
                 }
               }
               
-              pagesWithEmails.add(currentUrl);
+              pagesWithEmails.add(currentDiscoveryUrl);
             }
           }
           
           // Extract all links for further discovery with enhanced extraction
-          let links = extractLinks(html, currentUrl);
+          let links = extractLinks(html, currentDiscoveryUrl);
           
           // Add new links to the discovery queue
           for (const link of links) {
@@ -312,37 +277,37 @@ app.post('/scrape', async (req, res) => {
         let commonEmailPrefixes = new Set();
         
         // Process each URL with advanced classification
-        for (const currentUrl of urlsToProcess) {
-          if (processedUrls.has(currentUrl)) {
+        for (const urlToProcess of urlsToProcess) {
+          if (processedUrls.has(urlToProcess)) {
             continue;
           }
           
-          processedUrls.add(currentUrl);
+          processedUrls.add(urlToProcess);
           pagesScanned++;
           
           // Determine page priority for logging
           let pageType = "Regular";
-          if (criticalPages.has(currentUrl)) pageType = "⭐ CRITICAL";
-          else if (pagesWithEmails.has(currentUrl)) pageType = "📧 HAS EMAILS";
-          else if (highValuePages.has(currentUrl)) pageType = "🔍 HIGH VALUE";
+          if (criticalPages.has(urlToProcess)) pageType = "⭐ CRITICAL";
+          else if (pagesWithEmails.has(urlToProcess)) pageType = "📧 HAS EMAILS";
+          else if (highValuePages.has(urlToProcess)) pageType = "🔍 HIGH VALUE";
           
-          console.log(`[${pagesScanned}/${urlsToProcess.length}] ${pageType}: ${currentUrl}`);
+          console.log(`[${pagesScanned}/${urlsToProcess.length}] ${pageType}: ${urlToProcess}`);
           
           // Dynamic delay based on page importance
-          const delay = criticalPages.has(currentUrl) ? 300 : 500;
+          const delay = criticalPages.has(urlToProcess) ? 300 : 500;
           await new Promise(resolve => setTimeout(resolve, delay));
           
           // Fetch with more retries for important pages
-          const retries = criticalPages.has(currentUrl) ? 4 : 2;
-          const html = await fetchPage(currentUrl, browser, retries);
+          const retries = criticalPages.has(urlToProcess) ? 4 : 2;
+          const html = await fetchPage(urlToProcess, browser, retries);
           
           if (!html) {
-            errors.push(`Failed to fetch: ${currentUrl}`);
+            errors.push(`Failed to fetch: ${urlToProcess}`);
             continue;
           }
           
           // Enhanced email extraction with pattern learning
-          const emailsOnPage = extractEmails(html, currentUrl);
+          const emailsOnPage = extractEmails(html, urlToProcess);
           
           if (emailsOnPage.length > 0) {
             // Log all emails found on this page
@@ -391,7 +356,7 @@ app.post('/scrape', async (req, res) => {
                   try {
                     const storageResult = await storeEmailInSupabase(supabase, {
                       email: lowerCaseEmail,
-                      source: currentUrl,
+                      source: urlToProcess,
                       context: item.context || null,
                       isHrRelated: true,
                       pageType: pageType.replace(/[⭐📧🔍 ]/g, '')  // Clean emoji for db storage
@@ -424,10 +389,10 @@ app.post('/scrape', async (req, res) => {
           console.log(`  Progress: ${pagesScanned}/${urlsToProcess.length} pages | ${hrEmailsFound} HR emails | ${potentialHrEmails} potential HR emails | ${emailsStoredInDb} stored in DB | ${pagesPerSecond} p/s`);
         }
         
-        // URL scan report with detailed statistics
-        const urlScanTimeSeconds = Math.floor((Date.now() - startTime) / 1000);
+        // Final scan report for this URL with detailed statistics
+        const totalTimeSeconds = Math.floor((Date.now() - startTime) / 1000);
         console.log('='.repeat(50));
-        console.log(`URL SCAN COMPLETED: ${url}`);
+        console.log(`SCAN COMPLETED FOR ${currentUrl}`);
         console.log('='.repeat(50));
         console.log(`Total pages scanned: ${pagesScanned}`);
         console.log(` - Critical pages: ${[...processedUrls].filter(url => criticalPages.has(url)).length}`);
@@ -436,8 +401,8 @@ app.post('/scrape', async (req, res) => {
         console.log(`Total HR emails found: ${hrEmailsFound}`);
         console.log(`Additional potential HR emails identified: ${potentialHrEmails}`);
         console.log(`Total emails stored in database: ${emailsStoredInDb}`);
-        console.log(`Scan duration: ${urlScanTimeSeconds} seconds`);
-        console.log(`Pages per second: ${(pagesScanned / urlScanTimeSeconds).toFixed(2)}`);
+        console.log(`Scan duration: ${totalTimeSeconds} seconds`);
+        console.log(`Pages per second: ${(pagesScanned / totalTimeSeconds).toFixed(2)}`);
         
         if (errors.length > 0) {
           console.log(`Errors encountered: ${errors.length}`);
@@ -445,8 +410,8 @@ app.post('/scrape', async (req, res) => {
         
         console.log('='.repeat(50));
         
-        // Log all unique emails found by the end of the scan
-        console.log('ALL UNIQUE EMAILS FOUND FOR THIS URL:');
+        // Log all unique emails found for this URL
+        console.log('ALL UNIQUE EMAILS FOUND:');
         foundEmails.forEach((item, index) => {
           console.log(`  ${index + 1}. ${item.email} - Found on: ${item.foundOn || item.source}`);
         });
@@ -474,9 +439,16 @@ app.post('/scrape', async (req, res) => {
           return acc;
         }, {});
         
-        // Store results for this URL
-        results.push({ 
-          url,
+        // Add this URL's results to the overall results
+        overallResults.totalPagesScanned += pagesScanned;
+        overallResults.totalEmailsFound += foundEmails.length;
+        overallResults.totalHrEmailsFound += hrEmailsFound;
+        overallResults.totalEmailsStoredInDb += emailsStoredInDb;
+        overallResults.totalScanDurationSeconds += totalTimeSeconds;
+        
+        // Add individual URL results
+        overallResults.urlResults.push({
+          url: currentUrl,
           stats: {
             pagesScanned,
             criticalPagesScanned: [...processedUrls].filter(url => criticalPages.has(url)).length,
@@ -484,7 +456,7 @@ app.post('/scrape', async (req, res) => {
             totalHrEmailsFound: hrEmailsFound,
             potentialHrEmailsFound: potentialHrEmails,
             emailsStoredInDb,
-            scanDurationSeconds: urlScanTimeSeconds
+            scanDurationSeconds: totalTimeSeconds
           },
           emailDetails: foundEmails,
           emailsByDomain,
@@ -493,52 +465,36 @@ app.post('/scrape', async (req, res) => {
           errors: errors.length > 0 ? errors : undefined
         });
         
-        // Add a short pause between URLs
-        if (urlIndex < validatedUrls.length - 1) {
-          console.log('Pausing before next URL...');
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
+      } finally {
+        // Always close the browser after processing each URL
+        await browser.close();
       }
-      
-      // Final scan report with detailed statistics
-      const totalTimeSeconds = Math.floor((Date.now() - startTime) / 1000);
-      console.log('='.repeat(50));
-      console.log('ULTRA-POWERFUL MULTI-URL SCAN COMPLETED');
-      console.log('='.repeat(50));
-      console.log(`Total URLs processed: ${validatedUrls.length}`);
-      
-      const totalPagesScanned = results.reduce((sum, result) => sum + result.stats.pagesScanned, 0);
-      const totalHrEmails = results.reduce((sum, result) => sum + result.stats.totalHrEmailsFound, 0);
-      const totalPotentialEmails = results.reduce((sum, result) => sum + result.stats.potentialHrEmailsFound, 0);
-      const totalEmailsStored = results.reduce((sum, result) => sum + result.stats.emailsStoredInDb, 0);
-      
-      console.log(`Total pages scanned across all URLs: ${totalPagesScanned}`);
-      console.log(`Total HR emails found: ${totalHrEmails}`);
-      console.log(`Total potential HR emails: ${totalPotentialEmails}`);
-      console.log(`Total emails stored in database: ${totalEmailsStored}`);
-      console.log(`Total scan duration: ${totalTimeSeconds} seconds`);
-      console.log(`Overall pages per second: ${(totalPagesScanned / totalTimeSeconds).toFixed(2)}`);
-      console.log('='.repeat(50));
-      
-      // Return comprehensive results for all URLs
-      return res.json({ 
-        success: true,
-        totalURLs: validatedUrls.length,
-        invalidURLs: invalidUrls.length > 0 ? invalidUrls : undefined,
-        overallStats: {
-          totalPagesScanned,
-          totalHrEmails,
-          totalPotentialEmails,
-          totalEmailsStored,
-          totalTimeSeconds,
-          pagesPerSecond: (totalPagesScanned / totalTimeSeconds).toFixed(2)
-        },
-        urlResults: results
-      });
-    } finally {
-      // Always close the browser
-      await browser.close();
     }
+    
+    // Return combined results for all URLs
+    console.log('='.repeat(50));
+    console.log('ULTRA-POWERFUL SCAN COMPLETED FOR ALL URLS');
+    console.log('='.repeat(50));
+    console.log(`Total URLs processed: ${urlsToProcess.length}`);
+    console.log(`Total pages scanned across all URLs: ${overallResults.totalPagesScanned}`);
+    console.log(`Total HR emails found: ${overallResults.totalHrEmailsFound}`);
+    console.log(`Total emails stored in database: ${overallResults.totalEmailsStoredInDb}`);
+    console.log(`Total scan duration: ${overallResults.totalScanDurationSeconds} seconds`);
+    console.log('='.repeat(50));
+    
+    return res.json({
+      success: true,
+      stats: {
+        totalUrlsProcessed: urlsToProcess.length,
+        totalPagesScanned: overallResults.totalPagesScanned,
+        totalEmailsFound: overallResults.totalEmailsFound,
+        totalHrEmailsFound: overallResults.totalHrEmailsFound,
+        totalEmailsStoredInDb: overallResults.totalEmailsStoredInDb,
+        totalScanDurationSeconds: overallResults.totalScanDurationSeconds
+      },
+      urlResults: overallResults.urlResults
+    });
+    
   } catch (error) {
     console.error('Scraping error:', error);
     return res.status(500).json({ 
@@ -547,7 +503,8 @@ app.post('/scrape', async (req, res) => {
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
-});// Utility for checking similarity between email prefixes
+});
+// Utility for checking similarity between email prefixes
 function levenshteinDistance(a, b) {
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
