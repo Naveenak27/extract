@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const puppeteer = require('puppeteer');
+const fetch = require("node-fetch");
 const { createClient } = require('@supabase/supabase-js');
 const { extractEmails, extractLinks, fetchPage, prioritizeUrls, storeEmailInSupabase, scrapeWebsite } = require('./scraper-utils');
 const bulkScraper = require('./bulk-scraper');
@@ -26,6 +27,31 @@ app.use(cors({
 app.options('*', cors());
 
 app.use(express.json());
+const RENDER_API_KEY = process.env.RENDER_API_KEY;
+const SERVICE_ID = process.env.RENDER_SERVICE_ID;
+
+// API Route to Restart Render Server
+app.post("/restart-server", async (req, res) => {
+    try {
+        const response = await fetch(`https://api.render.com/v1/services/${SERVICE_ID}/deploys`, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${RENDER_API_KEY}`,
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            },
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            return res.status(400).json({ error: errorData.message });
+        }
+
+        res.json({ message: "Deployment triggered successfully!" });
+    } catch (error) {
+        res.status(500).json({ error: "Server error: " + error.message });
+    }
+});
 
 // Main scraping endpoint
 app.post('/scrape', async (req, res) => {
