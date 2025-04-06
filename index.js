@@ -31,27 +31,35 @@ const RENDER_API_KEY = process.env.RENDER_API_KEY;
 const SERVICE_ID = process.env.RENDER_SERVICE_ID;
 
 // API Route to Restart Render Server
+
 app.post("/restart-server", async (req, res) => {
     try {
-        const response = await fetch(`https://api.render.com/v1/services/${SERVICE_ID}/deploys`, {
+        const renderResponse = await fetch(`https://api.render.com/v1/services/${SERVICE_ID}/deploys`, {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${RENDER_API_KEY}`,
                 "Accept": "application/json",
                 "Content-Type": "application/json"
             },
+            body: JSON.stringify({ clearCache: true }) // optional: starts with a clean build
         });
 
-        if (!response.ok) {
-            const errorData = await response.json();
-            return res.status(400).json({ error: errorData.message });
+        if (!renderResponse.ok) {
+            const errorData = await renderResponse.json();
+            return res.status(renderResponse.status).json({ error: errorData.message || "Failed to trigger deployment." });
         }
 
-        res.json({ message: "Deployment triggered successfully!" });
+        const data = await renderResponse.json();
+
+        res.status(200).json({
+            message: "Fresh deployment triggered successfully!",
+            deployId: data.id
+        });
     } catch (error) {
-        res.status(500).json({ error: "Server error: " + error.message });
+        res.status(500).json({ error: "Internal server error: " + error.message });
     }
 });
+
 
 // Main scraping endpoint
 app.post('/scrape', async (req, res) => {
