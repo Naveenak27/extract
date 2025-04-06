@@ -34,9 +34,10 @@ const SERVICE_ID = process.env.RENDER_SERVICE_ID;
 
 app.post("/restart-server", async (req, res) => {
     try {
-        console.log("Attempting to restart server...");
+        console.log("Attempting to redeploy with cleared cache...");
         console.log(`Using service ID: ${SERVICE_ID}`);
         
+        // Using an empty object as body worked previously
         const renderResponse = await fetch(`https://api.render.com/v1/services/${SERVICE_ID}/deploys`, {
             method: "POST",
             headers: {
@@ -44,7 +45,7 @@ app.post("/restart-server", async (req, res) => {
                 "Accept": "application/json",
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify({ clearCache: true })
+            body: JSON.stringify({}) // Empty object for the body
         });
         
         console.log("Response status:", renderResponse.status);
@@ -69,7 +70,7 @@ app.post("/restart-server", async (req, res) => {
         }
         
         res.status(200).json({
-            message: "Fresh deployment triggered successfully!",
+            message: "Fresh deployment with cleared cache triggered successfully!",
             deployId: data.id
         });
     } catch (error) {
